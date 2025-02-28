@@ -1,4 +1,4 @@
-package cmd
+package main
 
 import (
 	"310499-itmobatareyka-course-1343/internal/repository"
