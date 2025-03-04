@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+option go_package = "pkg/api/test";
+import "proto/google/api/annotations.proto";
+
+package api;
+
+service OrderService {
+  rpc CreateOrder(CreateOrderRequest) returns (CreateOrderResponse) {
+    option (google.api.http) = {
+      post: "/create/order"
+      body: "*"
+    };
+  }
+  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse) {
+    option (google.api.http) = {
+      get: "/get/orders/{id}"
+    };
+  }
+  rpc UpdateOrder(UpdateOrderRequest) returns (UpdateOrderResponse) {
+    option (google.api.http) = {
+      post: "/update/orders/{id}"
+      body: "*"
+    };
+  }
+  rpc DeleteOrder(DeleteOrderRequest) returns (DeleteOrderResponse) {
+    option (google.api.http) = {
+      delete: "/delete/orders/{id}"
+    };
+  }
+  rpc ListOrders(ListOrdersRequest) returns (ListOrdersResponse) {
+    option (google.api.http) = {
+      get: "/get/orders"
+    };
+  }
+}
+
+message Order {
+  string id = 1;
+  string item = 2;
+  int32 quantity = 3;
+}
+
+message CreateOrderRequest {
+  string item = 1;
+  int32 quantity = 2;
+}
+
+message CreateOrderResponse {
+  string id = 1;
+}
+
+message GetOrderRequest {
+  string id = 1;
+}
+
+message GetOrderResponse {
+  Order order = 1;
+}
+
+message UpdateOrderRequest {
+  string id = 1;
+  string item = 2;
+  int32 quantity = 3;
+}
+
+message UpdateOrderResponse {
+  Order order = 1;
+}
+
+message DeleteOrderRequest {
+  string id = 1;
+}
+
+message DeleteOrderResponse {
+  bool success = 1;
+}
+
+message ListOrdersRequest {}
+
+message ListOrdersResponse {
+  repeated Order orders = 1;
+}

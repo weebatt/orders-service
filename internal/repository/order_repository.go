@@ -1,7 +1,7 @@
 package repository
 
 import (
-	test "310499-itmobatareyka-course-1343/pkg/api/test/api"
+	test "310499-itmobatareyka-course-1343/pkg/api/test/proto/api"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"sync"

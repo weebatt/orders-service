@@ -2,7 +2,7 @@ package service
 
 import (
 	"310499-itmobatareyka-course-1343/internal/repository"
-	test "310499-itmobatareyka-course-1343/pkg/api/test/api"
+	test "310499-itmobatareyka-course-1343/pkg/api/test/proto/api"
 	"context"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
