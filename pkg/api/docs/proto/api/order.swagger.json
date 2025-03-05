@@ -49,7 +49,7 @@
       }
     },
     "/delete/orders/{id}": {
-      "get": {
+      "delete": {
         "operationId": "OrderService_DeleteOrder",
         "responses": {
           "200": {
