@@ -1,83 +1,116 @@
 package repository
 
 import (
+	"context"
+	"database/sql"
+	_ "fmt"
+
 	test "310499-itmobatareyka-course-1343/pkg/api/test/proto/api"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"sync"
+
+	_ "github.com/lib/pq"
 )
 
-type Repository interface {
-	InitializationOrderRepository() *OrderMap
-	Create(order *test.Order) error
-	Find(id string) (*test.Order, error)
-	Update(id string) (*test.Order, error)
-	Delete(id string) (bool, error)
-	GetAllOrders() ([]*test.Order, error)
+type PostgresRepository struct {
+	db *sql.DB
 }
 
-type OrderMap struct {
-	orders map[string]*test.Order
-	mutex  sync.RWMutex
+func NewPostgresRepository(db *sql.DB) *PostgresRepository {
+	return &PostgresRepository{db: db}
 }
 
-func InitializationOrderRepository() *OrderMap {
-	return &OrderMap{orders: make(map[string]*test.Order)}
+// Инициализация таблицы (создаём при запуске, если ещё не создана).
+func (r *PostgresRepository) InitSchema(ctx context.Context) error {
+	query := `
+	CREATE TABLE IF NOT EXISTS orders (
+	    id TEXT PRIMARY KEY,
+	    item TEXT NOT NULL,
+	    quantity INT NOT NULL
+	);
+	`
+	_, err := r.db.ExecContext(ctx, query)
+	return err
 }
 
-func (om *OrderMap) Create(order *test.Order) error {
-	om.mutex.Lock()
-	defer om.mutex.Unlock()
+func (r *PostgresRepository) Create(order *test.Order) error {
+	_, err := r.db.Exec(`
+		INSERT INTO orders (id, item, quantity)
+		VALUES ($1, $2, $3)
+	`, order.Id, order.Item, order.Quantity)
 
-	if _, exists := om.orders[order.Id]; exists {
-		return status.Error(codes.AlreadyExists, "order already exists: Create")
+	if err != nil {
+		return status.Errorf(codes.Internal, "failed to create order in DB: %v", err)
 	}
-	om.orders[order.Id] = order
+
 	return nil
 }
 
-func (om *OrderMap) Find(id string) (*test.Order, error) {
-	om.mutex.RLock()
-	defer om.mutex.RUnlock()
+func (r *PostgresRepository) Find(id string) (*test.Order, error) {
+	row := r.db.QueryRow(`
+		SELECT id, item, quantity
+		FROM orders
+		WHERE id = $1
+	`, id)
 
-	order, exists := om.orders[id]
-	if !exists {
-		return nil, status.Error(codes.NotFound, "order not found: Find")
+	order := &test.Order{}
+	if err := row.Scan(&order.Id, &order.Item, &order.Quantity); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, status.Error(codes.NotFound, "order not found: Find")
+		}
+		return nil, status.Errorf(codes.Internal, "failed to find order in DB: %v", err)
 	}
 	return order, nil
 }
 
-func (om *OrderMap) Update(order *test.Order) (*test.Order, error) {
-	om.mutex.Lock()
-	defer om.mutex.Unlock()
-	_, exists := om.orders[order.Id]
-	if !exists {
-		return nil, status.Error(codes.NotFound, "order not found: Update")
+func (r *PostgresRepository) Update(order *test.Order) (*test.Order, error) {
+	res, err := r.db.Exec(`
+		UPDATE orders
+		SET item = $1, quantity = $2
+		WHERE id = $3
+	`, order.Item, order.Quantity, order.Id)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to update order in DB: %v", err)
 	}
-	om.orders[order.Id] = order
+	rowsAffected, _ := res.RowsAffected()
+	if rowsAffected == 0 {
+		return nil, status.Errorf(codes.NotFound, "order not found: Update")
+	}
 	return order, nil
 }
 
-func (om *OrderMap) Delete(id string) (bool, error) {
-	om.mutex.Lock()
-	defer om.mutex.Unlock()
-
-	if om.orders[id] == nil {
-		return false, status.Error(codes.NotFound, "order not found: Delete")
+func (r *PostgresRepository) Delete(id string) (bool, error) {
+	res, err := r.db.Exec(`
+		DELETE FROM orders
+		WHERE id = $1
+	`, id)
+	if err != nil {
+		return false, status.Errorf(codes.Internal, "failed to delete order in DB: %v", err)
 	}
-	delete(om.orders, id)
+	rowsAffected, _ := res.RowsAffected()
+	if rowsAffected == 0 {
+		return false, status.Errorf(codes.NotFound, "order not found: Delete")
+	}
 	return true, nil
 }
 
-func (om *OrderMap) GetAllOrders() ([]*test.Order, error) {
-	om.mutex.RLock()
-	defer om.mutex.RUnlock()
-
-	orders := make([]*test.Order, 0, len(om.orders))
-
-	for _, order := range om.orders {
-		orders = append(orders, order)
+func (r *PostgresRepository) GetAllOrders() ([]*test.Order, error) {
+	rows, err := r.db.Query(`
+		SELECT id, item, quantity
+		FROM orders
+	`)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to select all orders in DB: %v", err)
 	}
+	defer rows.Close()
 
+	var orders []*test.Order
+	for rows.Next() {
+		var order test.Order
+		if err = rows.Scan(&order.Id, &order.Item, &order.Quantity); err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to read order from DB: %v", err)
+		}
+		orders = append(orders, &order)
+	}
 	return orders, nil
 }

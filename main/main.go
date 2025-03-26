@@ -1,19 +1,10 @@
 package main
 
 import (
-	"310499-itmobatareyka-course-1343/internal/config"
-	"310499-itmobatareyka-course-1343/internal/repository"
-	"310499-itmobatareyka-course-1343/internal/service"
-	test "310499-itmobatareyka-course-1343/pkg/api/test/proto/api"
-	"310499-itmobatareyka-course-1343/pkg/logger"
 	"context"
+	"database/sql"
 	"flag"
 	"fmt"
-	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	"go.uber.org/zap"
-	_ "go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"net"
 	"net/http"
 	"os"
@@ -21,64 +12,96 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	"310499-itmobatareyka-course-1343/internal/config"
+	"310499-itmobatareyka-course-1343/internal/repository"
+	"310499-itmobatareyka-course-1343/internal/service"
+	test "310499-itmobatareyka-course-1343/pkg/api/test/proto/api"
+	"310499-itmobatareyka-course-1343/pkg/logger"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	_ "github.com/lib/pq"
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func main() {
-	// def chains for graceful shutdown
+	// graceful shutdown
 	errChan := make(chan error)
 	stopChan := make(chan os.Signal)
 	signal.Notify(stopChan, syscall.SIGTERM, syscall.SIGINT)
 
-	// def context and config
 	ctx := context.Background()
 	ctx, _ = logger.New(ctx)
-	cfg, err := config.New()
 
+	cfg, err := config.New()
 	if err != nil {
 		logger.GetLoggerFromContext(ctx).Fatal(ctx, "failed reading config", zap.Error(err))
 	}
 
-	// def http server
+	// Подключаемся к PostgreSQL
+	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
+		cfg.PostgresUser,
+		cfg.PostgresPass,
+		cfg.PostgresHost,
+		cfg.PostgresPort,
+		cfg.PostgresDB,
+	)
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		logger.GetLoggerFromContext(ctx).Fatal(ctx, "failed to open postgres connection", zap.Error(err))
+	}
+	defer db.Close()
+
+	// Проверяем, что БД действительно работает
+	if err = db.Ping(); err != nil {
+		logger.GetLoggerFromContext(ctx).Fatal(ctx, "failed to ping postgres", zap.Error(err))
+	}
+
+	// Инициализируем схему (CREATE TABLE IF NOT EXISTS и т.п.)
+	postgresRepo := repository.NewPostgresRepository(db)
+	if err := postgresRepo.InitSchema(ctx); err != nil {
+		logger.GetLoggerFromContext(ctx).Fatal(ctx, "failed to init schema", zap.Error(err))
+	}
+
+	// готовим gRPC GW
 	httpServer := http.Server{Addr: ":" + strconv.Itoa(cfg.HTTPPort)}
 	grpcServerEndpoint := flag.String("grpc-server-endpoint", cfg.GRPCServerEndpoint, "gRPC server endpoint")
 
 	mux := runtime.NewServeMux()
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
-	errors := test.RegisterOrderServiceHandlerFromEndpoint(ctx, mux, *grpcServerEndpoint, opts)
-
-	if errors != nil {
-		logger.GetLoggerFromContext(ctx).Fatal(ctx, "failed to register grpc server", zap.Error(errors))
+	if err := test.RegisterOrderServiceHandlerFromEndpoint(ctx, mux, *grpcServerEndpoint, opts); err != nil {
+		logger.GetLoggerFromContext(ctx).Fatal(ctx, "failed to register grpc server", zap.Error(err))
 	}
 
-	// def grpc server
-	orderRepo := repository.InitializationOrderRepository()
-	orderService := service.InitializationOrderService(orderRepo)
-
+	// поднимаем gRPC
+	orderService := service.InitializationOrderService(postgresRepo) // <--- наша новая реализация
 	grpcServer := grpc.NewServer(grpc.UnaryInterceptor(logger.Interceptor))
 	test.RegisterOrderServiceServer(grpcServer, orderService)
 
-	listener, err := net.Listen("tcp", ":"+strconv.Itoa(cfg.HTTPPort))
-
+	// слушаем gRPC на порту cfg.GRPCPort
+	listener, err := net.Listen("tcp", ":"+strconv.Itoa(cfg.GRPCPort))
 	if err != nil {
 		logger.GetLoggerFromContext(ctx).Fatal(ctx, "failed to listen", zap.Error(err))
 	}
 
-	// goroutines for checking SIGTERM and SIGINT
-	logger.GetLoggerFromContext(ctx).Info(ctx, "http server successfully started", zap.Int("port", cfg.HTTPPort))
+	// запускаем httpServer (HTTP/REST => gRPC Gateway) на другом порту
 	go func() {
-		if errors = httpServer.ListenAndServe(); errors != nil {
-			errChan <- errors
+		logger.GetLoggerFromContext(ctx).Info(ctx, "http server started", zap.Int("port", cfg.HTTPPort))
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errChan <- err
 		}
 	}()
 
-	logger.GetLoggerFromContext(ctx).Info(ctx, "grpc server successfully started", zap.Int("port", cfg.GRPCPort))
+	// запускаем gRPC-сервер
 	go func() {
+		logger.GetLoggerFromContext(ctx).Info(ctx, "grpc server started", zap.Int("port", cfg.GRPCPort))
 		if err := grpcServer.Serve(listener); err != nil {
 			errChan <- err
 		}
 	}()
 
-	// stopping servers
+	// Graceful shutdown
 	shutdownCtx, shutdownCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer shutdownCancel()
 	defer func() {
@@ -88,8 +111,9 @@ func main() {
 	}()
 
 	select {
-	case err := <-errChan:
-		logger.GetLoggerFromContext(ctx).Fatal(ctx, "failed to serve", zap.Error(err))
+	case e := <-errChan:
+		logger.GetLoggerFromContext(ctx).Fatal(ctx, "failed to serve", zap.Error(e))
 	case <-stopChan:
+		logger.GetLoggerFromContext(ctx).Info(ctx, "Shutting down by signal...")
 	}
 }

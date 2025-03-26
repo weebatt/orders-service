@@ -1,0 +1,47 @@
+version: "3.8"
+
+services:
+  db:
+    image: postgres:15
+    container_name: "postgres_db"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    container_name: "grpc_app"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      GRPC_PORT: ${GRPC_PORT}
+      HTTP_PORT: ${HTTP_PORT}
+      GRPC_SERVER_ENDPOINT: ${GRPC_SERVER_ENDPOINT}
+
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+    ports:
+      - "${HTTP_PORT}:${HTTP_PORT}"
+      - "${GRPC_PORT}:${GRPC_PORT}"
+    networks:
+      - backend
+
+networks:
+  backend:
+
+volumes:
+  postgres_data:
